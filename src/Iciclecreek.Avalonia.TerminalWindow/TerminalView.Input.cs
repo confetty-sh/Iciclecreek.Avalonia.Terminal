@@ -104,7 +104,7 @@ namespace Iciclecreek.Terminal
                 return;
             }
 
-            var text = await clipboard.TryGetTextAsync();
+            var text = await TryReadClipboardTextAsync(clipboard);
             if (!string.IsNullOrEmpty(text))
             {
                 // Wrap paste in bracketed paste sequences if mode is enabled
@@ -152,7 +152,7 @@ namespace Iciclecreek.Terminal
                 // An uncooperative clipboard offers whatever the probes below still find.
             }
 
-            var text = await clipboard.TryGetTextAsync();
+            var text = await TryReadClipboardTextAsync(clipboard);
             if (!string.IsNullOrEmpty(text) && !data.ContainsKey("text/plain"))
             {
                 mimes.Add("text/plain");
@@ -181,7 +181,7 @@ namespace Iciclecreek.Terminal
         /// <summary>
         /// Copies selected text to the clipboard.
         /// </summary>
-        /// <returns>True if text was copied, false if no selection.</returns>
+        /// <returns>True if text was copied, false if there is no selection or the clipboard refused it.</returns>
         public async Task<bool> CopyAsync()
         {
             if (!_terminal.Selection.HasSelection)
@@ -201,11 +201,39 @@ namespace Iciclecreek.Terminal
                     text = text.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
                 }
 
-                await clipboard.SetTextAsync(text);
-                return true;
+                // The clipboard is shared with every other process, and one holding it open makes this
+                // throw. Most callers are async void key and mouse handlers, where an exception escaping
+                // would end the application. False also keeps a cut from deleting what it failed to copy.
+                try
+                {
+                    await clipboard.SetTextAsync(text);
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[{_instanceId}] Clipboard write failed: {ex.Message}");
+                    return false;
+                }
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Reads the clipboard's text, or null if there is none or it cannot be read just now.
+        /// </summary>
+        /// <remarks>Declines rather than throws, for the reason <see cref="CopyAsync"/> gives.</remarks>
+        private static async Task<string?> TryReadClipboardTextAsync(IClipboard clipboard)
+        {
+            try
+            {
+                return await clipboard.TryGetTextAsync();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[TerminalView] Clipboard read failed: {ex.Message}");
+                return null;
+            }
         }
 
         // True when the key is a modifier pressed on its own (no associated character),
@@ -1353,7 +1381,7 @@ namespace Iciclecreek.Terminal
         /// control does not have focus and a tracked copy would then be wrong until the next press.
         /// Windows-only: the P/Invoke does not exist elsewhere, and neither does Win32 input mode.
         /// </remarks>
-        private static IEnumerable<(bool On, Win32ControlKeyState Flag)> LockStates()
+        internal static IEnumerable<(bool On, Win32ControlKeyState Flag)> LockStates()
         {
             if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
                 yield break;
